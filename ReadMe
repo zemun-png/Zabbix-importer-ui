@@ -1,1 +1,218 @@
-Read Me ....
+# Zabbix Provisioning & Bulk Importer
+
+![Pipeline](https://img.shields.io/badge/pipeline-placeholder-blue)
+![Coverage](https://img.shields.io/badge/coverage-placeholder-yellow)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![Zabbix](https://img.shields.io/badge/Zabbix-7.0%20LTS-red)
+
+## Description
+
+A lightweight, modular, **full-stack provisioning tool for Zabbix 7.0 LTS** that automates bulk host
+onboarding via the Zabbix **JSON-RPC API**.
+
+- **Python backend** + **Vanilla JS frontend** — no heavy frameworks.
+- Single-process HTTP server (default port `8788`), ideal for **offline / air-gapped environments**.
+- Designed for operational teams that need repeatable, auditable host provisioning.
+
+## Key Features
+
+- **Bulk host creation** — via CSV upload or the web UI, including host groups, templates, tags and interfaces.
+- **Zabbix 7.0 compatibility** — correct `monitored_by` handling (`1` = proxy, `2` = proxy group) with a
+  resilient fallback for strict `proxyid` validation (JSON-RPC error `-32602`).
+- **TCP Connection Check Manager** — dynamic port monitoring driven by user macros, without touching
+  reference templates.
+- **Session-based authentication** — every request is authorized with the `X-Importer-Session` header.
+- **Enterprise audit logging** — structured JSON logs with `timestamp`, `username`, `client_ip`, `diff`, `status`.
+- **Dynamic host naming conventions** — pluggable naming module (`naming.js`).
+- **Report export** — Excel and HTML reports of import results.
+- **Validated Zabbix versions** — `7.0.5 LTS` (HA cluster) and `7.0.19`.
+
+## Architecture
+
+Modular design, cleanly separated backend and frontend.
+
+### Backend (Python)
+
+| Module         | Responsibility                                  |
+|----------------|--------------------------------------------------|
+| `server.py`    | HTTP server, routing, session management         |
+| `zabbix_api.py`| Zabbix JSON-RPC client (auth, host.* API calls)  |
+| `audit.py`     | Structured JSON audit logging                    |
+| `config.py`    | Zabbix URL, port, and runtime configuration      |
+
+### Frontend (Vanilla JS, `static/js/`)
+
+| Module            | Responsibility                                  |
+|-------------------|--------------------------------------------------|
+| `app.js`          | Application bootstrap and routing                |
+| `single-host.js`  | Single host onboarding form (protected)          |
+| `bulk-import.js`  | CSV bulk import workflow                         |
+| `tcp-check.js`    | TCP Connection Check Manager                     |
+| `naming.js`       | Dynamic host naming conventions (protected)      |
+| `pickers.js`      | Host group / template / proxy pickers (protected)|
+
+**Protected core modules** are integrity-checked via **SHA-256** against the baseline manifest
+(`SHA256SUMS.txt`). See [Protected Files](#protected-files).
+
+## Requirements
+
+- Python **3.9+**
+- Zabbix **7.0 LTS**
+- A modern browser (Chrome, Firefox, Edge)
+
+## Installation
+
+1. Unzip the release archive:
+
+   ```bash
+   unzip zabbix_importer.zip
+   cd zabbix_importer
+   ```
+
+2. Install Python dependencies (offline mirror friendly):
+
+   ```bash
+   pip install -r requirements.txt
+   # air-gapped: pip install -r requirements.txt --no-index --find-links=/path/to/wheels
+   ```
+
+3. Configure `config.py`:
+
+   ```python
+   ZABBIX_URL = "http://zabbix.example.local/zabbix"  # your Zabbix frontend/API URL
+   PORT = 8788                                        # importer server port
+   ```
+
+## Running Manually
+
+```bash
+python3 server.py
+```
+
+Then open `http://<server-ip>:8788` in your browser.
+
+## Running as a systemd Service
+
+Create `/etc/systemd/system/zabbix-importer.service`:
+
+```ini
+[Unit]
+Description=Zabbix Provisioning & Bulk Importer
+After=network.target
+
+[Service]
+Type=simple
+User=zabbix-importer
+Group=zabbix-importer
+WorkingDirectory=/opt/zabbix-importer
+ExecStart=/usr/bin/python3 /opt/zabbix-importer/server.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Set up the dedicated system user and deploy:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin zabbix-importer
+sudo mkdir -p /opt/zabbix-importer
+sudo chown -R zabbix-importer:zabbix-importer /opt/zabbix-importer
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now zabbix-importer.service
+sudo systemctl status zabbix-importer.service
+```
+
+Follow the logs:
+
+```bash
+sudo journalctl -u zabbix-importer.service -f
+```
+
+## Testing
+
+The project ships **80+ unit tests**:
+
+```bash
+pytest -v
+```
+
+## Protected Files
+
+The following core frontend modules are **protected**; their baseline SHA-256 hashes must remain
+**unchanged** at all times:
+
+| File              | SHA-256 (baseline)                                |
+|-------------------|---------------------------------------------------|
+| `static/js/single-host.js` | `5617cea8be0dc2a4559ebd2eae1ab5be2f7e74413916f8248a180fed7c6dab98` |
+| `static/js/naming.js`      | `04defb802234a948139d5624a1c7a2daa67e79d7b39c655585ff992bc8608539` |
+| `static/js/pickers.js`     | `db0901fe2091df9744ac8ae26882b20056ade449ae2c47355a6f4023f50b50d7` |
+
+Verify integrity:
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
+Any mismatch indicates an unauthorized modification — do **not** deploy.
+
+## Security & Audit
+
+- **Session-based auth**: sessions are issued at login and validated on every request via the
+  `X-Importer-Session` header; no cookies, no persistent tokens.
+- **Audit trail**: every mutating operation is recorded as a structured JSON line containing
+  `timestamp`, `username`, `client_ip`, `diff` (what changed), and `status` — write logs to
+  `logs/zabbix_import_audit.log`.
+- **Integrity protection**: protected core modules are SHA-256 verified before runtime.
+- **Least privilege**: run the service under a dedicated, non-login system user.
+- **Network isolation**: no outbound internet access is required; suitable for air-gapped networks.
+
+## Project Structure
+
+```text
+zabbix_importer/
+├── server.py                  # HTTP server, routing, sessions
+├── zabbix_api.py              # Zabbix JSON-RPC API client
+├── audit.py                   # Structured JSON audit logging
+├── config.py                  # Configuration (Zabbix URL, port)
+├── report_export.py           # Excel / HTML report generation
+├── requirements.txt
+├── SHA256SUMS.txt             # Baseline integrity manifest
+├── index.html                 # Frontend entry point
+├── logs/
+│   └── zabbix_import_audit.log
+├── static/
+│   ├── css/
+│   │   └── style.css
+│   ├── js/
+│   │   ├── app.js             # App bootstrap (protected set)
+│   │   ├── single-host.js     # Single host form      [PROTECTED]
+│   │   ├── bulk-import.js     # CSV bulk import
+│   │   ├── tcp-check.js       # TCP Connection Check Manager
+│   │   ├── naming.js          # Naming conventions    [PROTECTED]
+│   │   └── pickers.js         # Entity pickers       [PROTECTED]
+│   └── sample_hosts.csv       # Example CSV for bulk import
+└── tests/
+    ├── test_tcp_check.py
+    ├── test_proxy_assignment.py
+    ├── test_dual_auth_audit.py
+    ├── test_report_includes_host_ip.py
+    └── test_valuemap_creation.py
+```
+
+## License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+
+---
+
+*Built for Zabbix 7.0 LTS · Validated on 7.0.5 LTS (HA) and 7.0.19*
